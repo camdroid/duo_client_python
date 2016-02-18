@@ -3,8 +3,7 @@ Low level functions for generating Duo Web API calls and parsing results.
 """
 from __future__ import absolute_import
 from __future__ import print_function
-import six
-__version__ = '3.0'
+__version__ = '4.0'
 
 import base64
 import collections
@@ -18,6 +17,7 @@ import os
 import socket
 import ssl
 import sys
+import six
 
 try:
     # For the optional demonstration CLI program.
@@ -117,7 +117,8 @@ class Client(object):
                  ca_certs=DEFAULT_CA_CERTS,
                  sig_timezone='UTC',
                  user_agent=('Duo API Python/' + __version__),
-                 timeout=socket._GLOBAL_DEFAULT_TIMEOUT):
+                 timeout=socket._GLOBAL_DEFAULT_TIMEOUT,
+                 paging_limit=100):
         """
         ca_certs - Path to CA pem file.
         """
@@ -131,7 +132,7 @@ class Client(object):
         self.ca_certs = ca_certs
         self.user_agent = user_agent
         self.set_proxy(host=None, proxy_type=None)
-
+        self.paging_limit = paging_limit
         # Default timeout is a sentinel object
         if timeout is socket._GLOBAL_DEFAULT_TIMEOUT:
             self.timeout = timeout
@@ -275,7 +276,23 @@ class Client(object):
         RuntimeError.
         """
         (response, data) = self.api_call(method, path, params)
-        return self.parse_json_response(response, data)
+        (response, _) = self.parse_json_response(response, data)
+        return response
+
+    def json_paging_api_call(self, method, path, params):
+        objects = []
+        next_offset = 0
+
+        if 'limit' not in params and self.paging_limit:
+            params['limit'] = str(self.paging_limit)
+
+        while next_offset is not None:
+            params['offset'] = str(next_offset)
+            (response, data) = self.api_call(method, path, params)
+            (objects, metadata) = self.parse_json_response(response, data)
+            next_offset = metadata.get('next_offset', None)
+            for obj in objects:
+                yield obj
 
     def parse_json_response(self, response, data):
         """
@@ -314,7 +331,7 @@ class Client(object):
             data = json.loads(data)
             if data['stat'] != 'OK':
                 raise_error('Received error response: %s' % data)
-            return data['response']
+            return (data['response'], data.get('metadata', {}))
         except (ValueError, KeyError, TypeError):
             raise_error('Received bad response: %s' % data)
 
